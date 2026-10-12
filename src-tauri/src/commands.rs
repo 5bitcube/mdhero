@@ -163,6 +163,41 @@ pub fn path_exists(path: String) -> bool {
     Path::new(&path).exists()
 }
 
+#[tauri::command]
+pub fn path_is_dir(path: String) -> bool {
+    Path::new(&path).is_dir()
+}
+
+#[tauri::command]
+pub fn open_folder(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if !p.is_dir() {
+        return Err(format!("Not a directory: {}", path));
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+    Ok(())
+}
+
 /// Allow the webview's asset protocol to serve specific image files — but only
 /// files a document is entitled to.
 ///
@@ -431,6 +466,366 @@ pub struct MdFile {
     pub path: String,
     pub rel_path: String,
     pub modified: u64,
+}
+
+// ---- Code links (clickable inline code spans) ----------------------------
+//
+// A JSON file in `%APPDATA%/com.mdhero.app/links/` maps inline `code` spans
+// in a specific markdown document to full filesystem paths. When a document is
+// opened, the frontend calls `load_code_links` with its path; we scan the
+// links directory for a JSON file whose `file` field matches, and return the
+// `links` map. The renderer then wraps matching `<code>` elements in `<a>`
+// tags so they open the referenced file on click.
+
+#[tauri::command]
+pub fn load_code_links(document_path: String) -> Result<std::collections::HashMap<String, String>, String> {
+    let app_data = app_data_dir().ok_or_else(|| "Cannot determine app data directory".to_string())?;
+    let links_dir = app_data.join("links");
+
+    if !links_dir.exists() || !links_dir.is_dir() {
+        return Ok(std::collections::HashMap::new());
+    }
+
+    let entries = fs::read_dir(&links_dir).map_err(|e| format!("Failed to read links directory: {}", e))?;
+    let doc_normalized = normalize_compare_path(&document_path);
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let parsed: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let file_field = match parsed.get("file").and_then(|v| v.as_str()) {
+            Some(f) => f,
+            None => continue,
+        };
+        if normalize_compare_path(file_field) != doc_normalized {
+            continue;
+        }
+        if let Some(links) = parsed.get("links").and_then(|v| v.as_object()) {
+            let map: std::collections::HashMap<String, String> = links
+                .iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect();
+            return Ok(map);
+        }
+    }
+
+    Ok(std::collections::HashMap::new())
+}
+
+fn app_data_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA")
+            .filter(|s| !s.is_empty())
+            .map(|s| PathBuf::from(s).join("com.mdhero.app"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        home_dir().map(|h| h.join("Library/Application Support/com.mdhero.app"))
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| home_dir().map(|h| h.join(".config")))
+            .map(|d| d.join("com.mdhero.app"))
+    }
+}
+
+fn normalize_compare_path(p: &str) -> String {
+    let s = p.replace('/', "\\");
+    #[cfg(windows)]
+    { s.to_lowercase() }
+    #[cfg(not(windows))]
+    { s }
+}
+
+// ---- Link tree (Tree view) ------------------------------------------------
+
+#[derive(serde::Serialize, Clone)]
+pub struct LinkTreeNode {
+    name: String,
+    path: String,
+    kind: String, // "md", "folder", "file", "url"
+    alias: Option<String>,
+    children: Vec<LinkTreeNode>,
+}
+
+#[tauri::command]
+pub fn build_link_tree(document_path: String) -> Result<LinkTreeNode, String> {
+    let app_data = app_data_dir().ok_or_else(|| "Cannot determine app data directory".to_string())?;
+    let links_dir = app_data.join("links");
+    let mut visited = std::collections::HashSet::new();
+    Ok(build_tree_node(&document_path, &links_dir, &mut visited, 0, None))
+}
+
+#[tauri::command]
+pub fn set_alias(document_path: String, target_path: String, alias: Option<String>) -> Result<(), String> {
+    let app_data = app_data_dir().ok_or_else(|| "Cannot determine app data directory".to_string())?;
+    let links_dir = app_data.join("links");
+
+    if !links_dir.exists() || !links_dir.is_dir() {
+        return Err("Links directory does not exist".to_string());
+    }
+
+    let entries = fs::read_dir(&links_dir).map_err(|e| format!("Failed to read links directory: {}", e))?;
+    let doc_normalized = normalize_compare_path(&document_path);
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let mut parsed: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let file_field = match parsed.get("file").and_then(|v| v.as_str()) {
+            Some(f) => f,
+            None => continue,
+        };
+        if normalize_compare_path(file_field) != doc_normalized {
+            continue;
+        }
+
+        let aliases = parsed.as_object_mut().unwrap()
+            .entry("aliases")
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+            .as_object_mut()
+            .ok_or_else(|| "aliases field is not an object".to_string())?;
+
+        match &alias {
+            Some(a) if !a.trim().is_empty() => {
+                aliases.insert(target_path, serde_json::Value::String(a.clone()));
+            }
+            _ => {
+                aliases.remove(&target_path);
+            }
+        }
+
+        let out = serde_json::to_string_pretty(&parsed)
+            .map_err(|e| format!("Failed to serialize: {}", e))?;
+        fs::write(&path, out)
+            .map_err(|e| format!("Failed to write link file: {}", e))?;
+        return Ok(());
+    }
+
+    Err(format!("No link file found for document: {}", document_path))
+}
+
+/// Alias for a document from any link file, preferring the document's own.
+#[tauri::command]
+pub fn get_alias(document_path: String) -> Option<String> {
+    let links_dir = app_data_dir()?.join("links");
+    let entries = fs::read_dir(&links_dir).ok()?;
+    let doc_normalized = normalize_compare_path(&document_path);
+    let mut fallback = None;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(content) = fs::read_to_string(&path) else { continue };
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) else { continue };
+        let Some(aliases) = parsed.get("aliases").and_then(|v| v.as_object()) else { continue };
+
+        let found = aliases
+            .iter()
+            .find(|(k, _)| normalize_compare_path(k) == doc_normalized)
+            .and_then(|(_, v)| v.as_str().map(|s| s.to_string()));
+        if found.is_none() {
+            continue;
+        }
+
+        let is_self = parsed
+            .get("file")
+            .and_then(|v| v.as_str())
+            .map(|f| normalize_compare_path(f) == doc_normalized)
+            .unwrap_or(false);
+        if is_self {
+            return found;
+        }
+        if fallback.is_none() {
+            fallback = found;
+        }
+    }
+    fallback
+}
+
+fn build_tree_node(
+    doc_path: &str,
+    links_dir: &Path,
+    visited: &mut std::collections::HashSet<String>,
+    depth: u32,
+    alias: Option<String>,
+) -> LinkTreeNode {
+    let normalized = normalize_compare_path(doc_path);
+    let name = Path::new(doc_path)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let kind = classify_path(doc_path);
+
+    let mut node = LinkTreeNode {
+        name,
+        path: doc_path.to_string(),
+        kind: kind.clone(),
+        alias,
+        children: Vec::new(),
+    };
+
+    if depth > 5 || kind != "md" || !visited.insert(normalized.clone()) {
+        return node;
+    }
+
+    let data = match load_links_for_path(doc_path, links_dir) {
+        Some(d) => d,
+        None => return node,
+    };
+
+    // The root document has no parent link file, so its alias lives in its own.
+    if node.alias.is_none() {
+        node.alias = data.aliases.get(doc_path).cloned();
+    }
+
+    for (label, target) in &data.links {
+        let child_kind = classify_path(target);
+        let child_alias = data.aliases.get(target).cloned();
+        if child_kind == "md" {
+            let child = build_tree_node(target, links_dir, visited, depth + 1, child_alias);
+            node.children.push(child);
+        } else {
+            node.children.push(LinkTreeNode {
+                name: label.clone(),
+                path: target.clone(),
+                kind: child_kind,
+                alias: child_alias,
+                children: Vec::new(),
+            });
+        }
+    }
+
+    node
+}
+
+fn classify_path(p: &str) -> String {
+    if p.starts_with("http://") || p.starts_with("https://") {
+        return "url".to_string();
+    }
+    let path = Path::new(p);
+    if path.is_dir() || p.ends_with('\\') || p.ends_with('/') {
+        return "folder".to_string();
+    }
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown") => "md",
+        Some(ext) if ext.eq_ignore_ascii_case("json") => "json",
+        Some(ext) if ext.eq_ignore_ascii_case("txt") => "txt",
+        _ => "file",
+    }
+    .to_string()
+}
+
+pub const TREE_KINDS: [&str; 6] = ["md", "folder", "url", "json", "txt", "file"];
+
+/// Mirror the frontend's hidden-kind list onto the View > Tree View check items.
+#[tauri::command]
+pub fn set_tree_menu_checks(app: tauri::AppHandle, hidden: Vec<String>) {
+    let Some(menu) = app.menu() else { return };
+    for kind in TREE_KINDS {
+        let id = format!("tree:{}", kind);
+        if let Some(tauri::menu::MenuItemKind::Check(item)) = menu.get(id.as_str()) {
+            let _ = item.set_checked(!hidden.iter().any(|h| h == kind));
+        }
+    }
+}
+
+#[tauri::command]
+pub fn open_in_atom(path: String) -> Result<(), String> {
+    if !Path::new(&path).is_file() {
+        return Err(format!("Not a file: {}", path));
+    }
+    #[cfg(windows)]
+    let program = std::env::var_os("LOCALAPPDATA")
+        .map(|d| PathBuf::from(d).join("atom").join("atom.exe"))
+        .filter(|p| p.exists())
+        .ok_or_else(|| "Atom is not installed".to_string())?;
+    #[cfg(not(windows))]
+    let program = PathBuf::from("atom");
+    std::process::Command::new(program)
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("Failed to launch Atom: {}", e))?;
+    Ok(())
+}
+
+struct LinkData {
+    links: Vec<(String, String)>,
+    aliases: std::collections::HashMap<String, String>,
+}
+
+fn load_links_for_path(
+    doc_path: &str,
+    links_dir: &Path,
+) -> Option<LinkData> {
+    if !links_dir.exists() || !links_dir.is_dir() {
+        return None;
+    }
+    let entries = fs::read_dir(links_dir).ok()?;
+    let doc_normalized = normalize_compare_path(doc_path);
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let parsed: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let file_field = match parsed.get("file").and_then(|v| v.as_str()) {
+            Some(f) => f,
+            None => continue,
+        };
+        if normalize_compare_path(file_field) != doc_normalized {
+            continue;
+        }
+        if let Some(links) = parsed.get("links").and_then(|v| v.as_object()) {
+            let pairs: Vec<(String, String)> = links
+                .iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect();
+            let aliases = parsed.get("aliases")
+                .and_then(|v| v.as_object())
+                .map(|obj| {
+                    obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            return Some(LinkData { links: pairs, aliases });
+        }
+    }
+    None
 }
 
 // ---- AI Lookup right-click context menu ----------------------------------

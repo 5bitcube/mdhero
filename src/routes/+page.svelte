@@ -9,12 +9,16 @@
     newDocument,
     openFile,
     openFileDialog,
+    openFolder,
+    openInAtom,
     openWithSystem,
     pathExists,
+    pathIsDir,
     saveAsNewDocument,
     saveFile,
     unwatchFile,
   } from "$lib/tauri/files";
+  import { loadCodeLinks, codeLinks } from "$lib/stores/codeLinks";
   import { showToast } from "$lib/stores/toast";
   import { basename } from "$lib/utils/path";
   import { settings, getContentMaxWidth, stepFontSize, DEFAULT_FONT_SIZE } from "$lib/stores/settings";
@@ -47,6 +51,7 @@
   import Toast from "$lib/components/Toast.svelte";
   import Editor from "$lib/components/Editor.svelte";
   import PresentationView from "$lib/components/PresentationView.svelte";
+  import TreeView from "$lib/components/TreeView.svelte";
   import { updateScrollPercent } from "$lib/stores/recents";
   import { checkForUpdates, updateAvailable, updateDismissed, checkInFlight } from "$lib/stores/updater";
   import { get } from "svelte/store";
@@ -71,6 +76,8 @@
   // are "editing" states (activeTab.isEditing true); splitMode just adds the
   // preview pane, so save / dirty / editContent all keep working unchanged.
   let splitMode = $state(false);
+  // Tree mode is per tab: a newly opened file always starts in View.
+  let treeTabs = $state<Set<string>>(new Set());
   let splitPreviewHtml = $state("");
   let splitPreviewTimer: ReturnType<typeof setTimeout> | undefined;
   let contentMaxWidth = $derived(getContentMaxWidth($settings));
@@ -184,9 +191,10 @@
   let currentMode = $derived<ViewMode>(
     activeTab?.isEditing ? "editor" : rawMode ? "raw" : "viewer"
   );
-  // Which segment of the View/Split/Edit control is active.
-  let activeEditMode = $derived<"view" | "split" | "edit">(
-    activeTab?.isEditing ? (splitMode ? "split" : "edit") : "view"
+  let treeMode = $derived(!!activeTab && treeTabs.has(activeTab.id));
+  let hasCodeLinks = $derived(Object.keys($codeLinks).length > 0);
+  let activeEditMode = $derived<"view" | "split" | "edit" | "tree">(
+    treeMode ? "tree" : activeTab?.isEditing ? (splitMode ? "split" : "edit") : "view"
   );
 
   // Publish the ToC width (#108) as a CSS variable so the fixed sidebar and the
@@ -410,6 +418,24 @@
       return;
     }
 
+    if (await pathIsDir(resolved)) {
+      try {
+        await openFolder(resolved);
+      } catch {
+        showToast(`Couldn't open folder “${name}”`);
+      }
+      return;
+    }
+
+    if (/\.json$/i.test(resolved)) {
+      try {
+        await openInAtom(resolved);
+      } catch (e) {
+        showToast(`Couldn't open ${name} in Atom: ${e}`);
+      }
+      return;
+    }
+
     if (/\.(md|markdown)$/i.test(resolved)) {
       await openFile(resolved);
       return;
@@ -453,8 +479,22 @@
   // View / Split / Edit segmented control (#19). Split & Edit are both editing
   // states; splitMode is the only difference. Routed through switchMode so the
   // source-line position is preserved across the change.
-  function setMode(target: "view" | "split" | "edit") {
+  function setMode(target: "view" | "split" | "edit" | "tree") {
     if (!activeTab) return;
+    const tabId = activeTab.id;
+    if (target === "tree") {
+      treeTabs = new Set([...treeTabs, tabId]);
+      splitMode = false;
+      if (activeTab.isEditing) {
+        switchMode(rawMode ? "raw" : "viewer");
+      }
+      return;
+    }
+    if (treeTabs.has(tabId)) {
+      const next = new Set(treeTabs);
+      next.delete(tabId);
+      treeTabs = next;
+    }
     if (target === "view") {
       splitMode = false;
       switchMode(rawMode ? "raw" : "viewer");
@@ -581,6 +621,16 @@
       pasteDefaultMode = "paste";
       pasteVisible = true;
     };
+    (window as any).__mdhero_tree_toggle = (id: string) => {
+      const kind = id.replace(/^tree:/, "");
+      settings.update((s) => ({
+        ...s,
+        treeHiddenKinds: s.treeHiddenKinds.includes(kind)
+          ? s.treeHiddenKinds.filter((k) => k !== kind)
+          : [...s.treeHiddenKinds, kind],
+      }));
+    };
+    invoke("set_tree_menu_checks", { hidden: get(settings).treeHiddenKinds }).catch(() => {});
     (window as any).__mdhero_toggle_theme = () => {
       themeMode.update((m) => cycleTheme(m));
     };
@@ -1137,11 +1187,13 @@
       error: null,
     });
 
+    loadCodeLinks(tab.filePath);
+
     // Auto-present a Marp deck on activation when the setting is on and we're not
     // mid-edit (#44). Runs once per tab switch, so an explicit exit (Esc) sticks.
     presenting = isMarpDoc(tab.frontmatter) && get(settings).autoPresentMarp && !tab.isEditing;
 
-    getCurrentWindow().setTitle(`${tab.fileName} — MDHero`).catch(() => {});
+    getCurrentWindow().setTitle(`${tab.alias ?? tab.fileName} — MDHero`).catch(() => {});
 
     const savedScroll = tab.scrollTop;
     tick().then(() => {
@@ -1172,6 +1224,7 @@
       canEdit={canEditActive}
       editMode={activeEditMode}
       onSetMode={setMode}
+      {hasCodeLinks}
       onSave={() => activeTab && handleSave(activeTab)}
       onOpenSettings={() => (settingsVisible = true)}
       canPresent={activeIsMarp}
@@ -1210,7 +1263,14 @@
     <!-- Gate on filePath, not renderedHtml: an empty file renders to empty HTML,
          and gating on that dropped the user back to the home/recents view with no
          way to edit (#52). A real (even empty) file tab always shows here. -->
-    {#if presenting && activeIsMarp}
+    {#if treeMode}
+      <main class="content-main">
+        <TreeView
+          filePath={activeTab?.filePath ?? ""}
+          onLocalLink={handleLocalLink}
+        />
+      </main>
+    {:else if presenting && activeIsMarp}
       <PresentationView
         content={$docStore.content}
         baseDir={activeTab ? getBaseDir(activeTab.filePath) : ""}

@@ -1,7 +1,16 @@
 use tauri::{
-    menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     AppHandle, Runtime,
 };
+
+const TREE_KIND_LABELS: [(&str, &str); 6] = [
+    ("md", "Markdown files"),
+    ("folder", "Folders"),
+    ("url", "Web links"),
+    ("json", "JSON files"),
+    ("txt", "Text files"),
+    ("file", "Other files"),
+];
 
 pub fn create_menu<R: Runtime>(app: &AppHandle<R>) -> Result<Menu<R>, tauri::Error> {
     // macOS app menu (app name menu with Quit, Hide, etc.)
@@ -66,6 +75,18 @@ pub fn create_menu<R: Runtime>(app: &AppHandle<R>) -> Result<Menu<R>, tauri::Err
         ],
     )?;
 
+    // Checked state is mirrored from the frontend's persisted setting on launch
+    // via `set_tree_menu_checks`; clicks flip natively and notify the frontend.
+    let tree_items = TREE_KIND_LABELS
+        .iter()
+        .map(|(kind, label)| {
+            CheckMenuItem::with_id(app, format!("tree:{}", kind), *label, true, true, None::<&str>)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let tree_refs: Vec<&dyn IsMenuItem<R>> =
+        tree_items.iter().map(|i| i as &dyn IsMenuItem<R>).collect();
+    let tree_menu = Submenu::with_items(app, "Tree View", true, &tree_refs)?;
+
     let view_menu = Submenu::with_items(
         app,
         "View",
@@ -78,6 +99,8 @@ pub fn create_menu<R: Runtime>(app: &AppHandle<R>) -> Result<Menu<R>, tauri::Err
                 true,
                 Some("CmdOrCtrl+Shift+T"),
             )?,
+            &PredefinedMenuItem::separator(app)?,
+            &tree_menu,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::fullscreen(app, None)?,
         ],

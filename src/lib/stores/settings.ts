@@ -16,6 +16,8 @@ export interface ReaderSettings {
   tocWidth: number;
   /** Wrap long lines in rendered code blocks instead of scrolling them. */
   wrapCodeBlocks: boolean;
+  /** Tree view node kinds the user has toggled off under View > Tree View. */
+  treeHiddenKinds: string[];
 }
 
 const STORAGE_KEY = "mdhero-settings";
@@ -61,6 +63,7 @@ function loadSettings(): ReaderSettings {
     restoreTabsOnLaunch: true,
     tocWidth: DEFAULT_TOC_WIDTH,
     wrapCodeBlocks: false,
+    treeHiddenKinds: [],
   };
 
   if (typeof localStorage === "undefined") return defaults;
@@ -75,6 +78,7 @@ function loadSettings(): ReaderSettings {
         maxWidth: clamp(storedMaxWidth, MIN_MAX_WIDTH, MAX_MAX_WIDTH),
         widthMode: parsed.widthMode === "wide" ? "wide" : "comfortable",
         tocWidth: clampTocWidth(parsed.tocWidth),
+        treeHiddenKinds: Array.isArray(parsed.treeHiddenKinds) ? parsed.treeHiddenKinds : [],
       };
     }
   } catch {}

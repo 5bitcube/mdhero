@@ -7,6 +7,7 @@ import { tabStore } from "../stores/tabs";
 import { renderFull } from "../renderer/pipeline";
 import { addRecentFile } from "../stores/recents";
 import { pinnedFolders } from "../stores/pinned";
+import { loadCodeLinks } from "../stores/codeLinks";
 import { basename } from "../utils/path";
 
 export async function readMarkdownFile(path: string): Promise<string> {
@@ -40,6 +41,7 @@ export async function openFile(path: string): Promise<void> {
     // Whitelist the document's local images with the asset protocol before the
     // HTML hits the DOM, so images outside the static $HOME scope load (#31).
     await allowAssets(result.assetPaths, absolutePath);
+    loadCodeLinks(absolutePath);
 
     const tabId = tabStore.addTab(absolutePath, fileName, content, result.html, result.frontmatter, result.wordCount);
     watchFile(absolutePath);
@@ -60,7 +62,7 @@ export async function openFile(path: string): Promise<void> {
     });
 
     addRecentFile(absolutePath, fileName);
-    getCurrentWindow().setTitle(`${fileName} — MDHero`).catch(() => {});
+    await applyAlias(absolutePath);
   } catch (err) {
     document.set({
       filePath: absolutePath,
@@ -162,6 +164,7 @@ export async function reloadFile(path: string): Promise<void> {
     const fileName = basename(absolutePath);
 
     await allowAssets(result.assetPaths, absolutePath);
+    loadCodeLinks(absolutePath);
 
     tabStore.updateTabContent(absolutePath, content, result.html, result.frontmatter, result.wordCount);
 
@@ -215,6 +218,27 @@ export async function resolvePath(path: string): Promise<string> {
 /** Whether a path exists on disk (for the local-file-link existence check, #30). */
 export async function pathExists(path: string): Promise<boolean> {
   return invoke<boolean>("path_exists", { path });
+}
+
+export async function pathIsDir(path: string): Promise<boolean> {
+  return invoke<boolean>("path_is_dir", { path });
+}
+
+export async function openFolder(path: string): Promise<void> {
+  return invoke<void>("open_folder", { path });
+}
+
+export async function openInAtom(path: string): Promise<void> {
+  return invoke<void>("open_in_atom", { path });
+}
+
+/** Refresh a document's alias on its tab and, if active, the window title. */
+export async function applyAlias(path: string): Promise<void> {
+  const alias = await invoke<string | null>("get_alias", { documentPath: path });
+  tabStore.setAlias(path, alias);
+  if (tabStore.getActiveTab()?.filePath === path) {
+    getCurrentWindow().setTitle(`${alias ?? basename(path)} — MDHero`).catch(() => {});
+  }
 }
 
 /**

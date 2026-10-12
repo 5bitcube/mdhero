@@ -4,6 +4,7 @@ export interface Tab {
   id: string;
   filePath: string;
   fileName: string;
+  alias: string | null;
   content: string;
   renderedHtml: string;
   frontmatter: Record<string, unknown> | null;
@@ -120,6 +121,7 @@ function createTabStore() {
       id,
       filePath,
       fileName,
+      alias: null,
       content,
       renderedHtml,
       frontmatter: frontmatter ?? null,
@@ -266,6 +268,12 @@ function createTabStore() {
     );
   }
 
+  function setAlias(filePath: string, alias: string | null) {
+    tabs.update((ts) =>
+      ts.map((t) => (t.filePath === filePath ? { ...t, alias } : t))
+    );
+  }
+
   return {
     tabs,
     activeTabId,
@@ -281,6 +289,7 @@ function createTabStore() {
     markSaved,
     getLastSavedAt,
     rebindPath,
+    setAlias,
     saveScrollPosition,
     getSavedSession,
   };

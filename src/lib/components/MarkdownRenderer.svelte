@@ -5,6 +5,7 @@
   import { settings, fontFamilyMap, getContentMaxWidth } from "$lib/stores/settings";
   import { tocEntries, activeHeadingId, extractToc, isObserverPaused } from "$lib/stores/toc";
   import { aiLookup, setPendingSelection } from "$lib/stores/aiLookup";
+  import { codeLinks } from "$lib/stores/codeLinks";
   import mermaid from "mermaid";
   import DOMPurify from "dompurify";
   import { MERMAID_SANITIZE_CONFIG } from "$lib/renderer/mermaid-sanitize";
@@ -196,6 +197,9 @@
       // Add link hover tooltips
       addLinkTooltips();
 
+      // Make inline code spans with matching code links clickable
+      addCodeLinkHandlers();
+
       // Open external links in system browser
       addLinkHandlers();
 
@@ -279,6 +283,32 @@
         }
       });
     });
+  }
+
+  function addCodeLinkHandlers() {
+    if (!articleEl) return;
+    const links = $codeLinks;
+    if (!links || Object.keys(links).length === 0) return;
+
+    const codes = articleEl.querySelectorAll<HTMLElement>(":not(pre) > code");
+    for (const code of codes) {
+      if (code.dataset.codeLinkBound) continue;
+      const text = code.textContent?.trim() ?? "";
+      const target = links[text];
+      if (!target) continue;
+
+      code.dataset.codeLinkBound = "true";
+      code.classList.add("code-link");
+      code.addEventListener("click", (e) => {
+        e.preventDefault();
+        hideTooltip();
+        if (/^https?:\/\//i.test(target)) {
+          import("@tauri-apps/plugin-opener").then(({ openUrl }) => openUrl(target)).catch(() => window.open(target, "_blank"));
+        } else if (onLocalLink) {
+          onLocalLink(target);
+        }
+      });
+    }
   }
 
   function addCodeCopyButtons() {
@@ -514,6 +544,23 @@
 
   :global(html.dark) article :global(a) {
     color: #22D3EE;
+  }
+
+  /* Clickable code links */
+  article :global(code.code-link) {
+    cursor: pointer;
+    transition: text-decoration-color 0.15s;
+    text-decoration: underline;
+    text-decoration-color: transparent;
+    text-underline-offset: 2px;
+  }
+
+  article :global(code.code-link:hover) {
+    text-decoration-color: #0891B2;
+  }
+
+  :global(html.dark) article :global(code.code-link:hover) {
+    text-decoration-color: #22D3EE;
   }
 
   /* Code copy button */

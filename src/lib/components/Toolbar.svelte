@@ -19,7 +19,8 @@
     dirty = false,
     canEdit = false,
     editMode = "view",
-    onSetMode = (_m: "view" | "split" | "edit") => {},
+    onSetMode = (_m: "view" | "split" | "edit" | "tree") => {},
+    hasCodeLinks = false,
     onSave = () => {},
     onOpenSettings = () => {},
     canPresent = false,
@@ -34,8 +35,9 @@
     isEditing?: boolean;
     dirty?: boolean;
     canEdit?: boolean;
-    editMode?: "view" | "split" | "edit";
-    onSetMode?: (m: "view" | "split" | "edit") => void;
+    editMode?: "view" | "split" | "edit" | "tree";
+    onSetMode?: (m: "view" | "split" | "edit" | "tree") => void;
+    hasCodeLinks?: boolean;
     onSave?: () => void;
     onOpenSettings?: () => void;
     canPresent?: boolean;
@@ -150,6 +152,8 @@
         ? 'View · Split · Edit (open a file first)'
         : !canEdit
         ? 'Split and Edit are only available for local files'
+        : hasCodeLinks
+        ? 'View · Split · Edit · Tree'
         : 'View · Split · Edit'}
     >
       <button
@@ -170,6 +174,14 @@
         onclick={() => onSetMode('edit')}
         disabled={!canEdit}
       >Edit</button>
+      {#if hasCodeLinks}
+        <button
+          class="mode-seg"
+          class:active={editMode === 'tree'}
+          onclick={() => onSetMode('tree')}
+          disabled={!$document.filePath}
+        >Tree</button>
+      {/if}
     </div>
   </div>
 

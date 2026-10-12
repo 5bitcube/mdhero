@@ -124,11 +124,19 @@ pub fn run() {
             commands::write_markdown_file,
             commands::resolve_path,
             commands::path_exists,
+            commands::path_is_dir,
+            commands::open_folder,
             commands::allow_assets,
             commands::list_claude_plans,
             commands::list_folder_md_files,
             commands::quit_app,
             commands::show_ai_context_menu,
+            commands::load_code_links,
+            commands::build_link_tree,
+            commands::set_alias,
+            commands::get_alias,
+            commands::open_in_atom,
+            commands::set_tree_menu_checks,
             watcher::watch_file,
             watcher::unwatch_file,
             watcher::stop_watching,
@@ -191,6 +199,11 @@ pub fn run() {
                         // structured ID to the frontend router. JSON-stringify
                         // the ID so embedded colons (and any future special
                         // chars) survive the eval boundary cleanly.
+                        s if s.starts_with("tree:") => {
+                            let js =
+                                format!("window.__mdhero_tree_toggle?.({})", serde_json::json!(s));
+                            let _ = window.eval(&js);
+                        }
                         s if s.starts_with("aimenu:") => {
                             let js =
                                 format!("window.__mdhero_ai_lookup?.({})", serde_json::json!(s));
