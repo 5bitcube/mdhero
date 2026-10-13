@@ -174,28 +174,10 @@ pub fn open_folder(path: String) -> Result<(), String> {
     if !p.is_dir() {
         return Err(format!("Not a directory: {}", path));
     }
-    #[cfg(windows)]
-    {
-        std::process::Command::new("explorer")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| format!("Failed to open folder: {}", e))?;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| format!("Failed to open folder: {}", e))?;
-    }
-    #[cfg(all(not(windows), not(target_os = "macos")))]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| format!("Failed to open folder: {}", e))?;
-    }
-    Ok(())
+    // ShellExecute into the running shell, never `explorer.exe <path>`: on Windows a
+    // spawned explorer stub can hang in injected shell DLLs and spin at full CPU.
+    tauri_plugin_opener::open_path(p, None::<&str>)
+        .map_err(|e| format!("Failed to open folder: {}", e))
 }
 
 /// Allow the webview's asset protocol to serve specific image files — but only

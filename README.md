@@ -155,7 +155,10 @@ no extension and `.json` is not listed, so both silently failed.
 `handleLocalLink` now checks, in order:
 
 1. path does not exist → toast;
-2. **directory** → `open_folder` (Explorer / Finder / `xdg-open`);
+2. **directory** → `open_folder`, which calls `tauri_plugin_opener::open_path`
+   from Rust (ShellExecute into the running Explorer / Finder / `xdg-open`)
+   rather than spawning `explorer.exe <path>` — a spawned Explorer stub can
+   hang in injected shell DLLs and spin at full CPU until reboot;
 3. **`.json`** → `open_in_atom`, which launches
    `%LOCALAPPDATA%\atom\atom.exe` (`atom` on PATH elsewhere) and toasts if
    Atom is missing;
